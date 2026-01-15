@@ -33,7 +33,19 @@ class TiffViewerApp:
 
         self.folder_path = tk.StringVar(value="未選擇資料夾")
         self.prefix_groups: list[tuple[str, list[str]]] = []
-        self.photo_refs: list[ImageTk.PhotoImage | None] = [None] * 7
+        self.photo_refs: list[ImageTk.PhotoImage | None] = [None] * 8
+        self.colorbar_refs: list[ImageTk.PhotoImage | None] = [None] * 8
+
+        self.band_slots = [
+            {"label": "藍光 475", "keywords": ("475", "blue")},
+            {"label": "綠光 560", "keywords": ("560", "green")},
+            {"label": "紅光 668", "keywords": ("668", "red")},
+            {"label": "紅邊 717", "keywords": ("717", "rededge", "red-edge")},
+            {"label": "近紅外 842", "keywords": ("842", "nir")},
+            {"label": "全色 634", "keywords": ("634", "pan", "panchromatic")},
+            {"label": "LWIR 10.5 µm", "keywords": ("10.5", "10500", "lwir")},
+            {"label": "（空白）", "keywords": ()},
+        ]
 
         self._build_layout()
 
@@ -71,14 +83,71 @@ class TiffViewerApp:
 
         self.image_frame = ttk.Frame(right_frame)
         self.image_frame.pack(fill=tk.BOTH, expand=True)
+        for row in range(4):
+            weight = 3 if row in (0, 2) else 1
+            self.image_frame.rowconfigure(row, weight=weight)
+        for column in range(4):
+            self.image_frame.columnconfigure(column, weight=1)
 
         self.image_labels: list[ttk.Label] = []
-        for index in range(7):
-            label = ttk.Label(self.image_frame, text=f"第 {index + 1} 張")
-            label.grid(row=index, column=0, sticky="w", pady=6)
-            image_label = ttk.Label(self.image_frame)
-            image_label.grid(row=index, column=1, sticky="w", padx=(12, 0), pady=6)
+        self.band_labels: list[ttk.Label] = []
+        self.colorbar_labels: list[ttk.Label] = []
+        for index, band in enumerate(self.band_slots):
+            column = index % 4
+            image_row = 0 if index < 4 else 2
+            info_row = image_row + 1
+
+            image_label = ttk.Label(
+                self.image_frame,
+                text=f"第 {index + 1} 格",
+                anchor="center",
+                relief="solid",
+            )
+            image_label.grid(row=image_row, column=column, sticky="nsew", padx=6, pady=6)
+
+            info_frame = ttk.Frame(self.image_frame)
+            info_frame.grid(row=info_row, column=column, sticky="nsew", padx=6, pady=(0, 6))
+
+            band_label = ttk.Label(info_frame, text=band["label"], anchor="center")
+            band_label.pack(fill=tk.X)
+
+            colorbar_label = ttk.Label(info_frame)
+            colorbar_label.pack(fill=tk.X, pady=(4, 0))
+
             self.image_labels.append(image_label)
+            self.band_labels.append(band_label)
+            self.colorbar_labels.append(colorbar_label)
+
+    def _create_colorbar(self, width: int = 160, height: int = 14) -> ImageTk.PhotoImage:
+        gradient = Image.new("RGB", (width, height))
+        for x in range(width):
+            value = int(255 * (x / max(width - 1, 1)))
+            for y in range(height):
+                gradient.putpixel((x, y), (value, value, value))
+        return ImageTk.PhotoImage(gradient)
+
+    def _order_paths_by_band(self, paths: list[str]) -> list[str | None]:
+        ordered: list[str | None] = [None] * len(self.band_slots)
+        used_paths: set[str] = set()
+        lower_paths = [(path, os.path.basename(path).lower()) for path in paths]
+        for index, band in enumerate(self.band_slots[:-1]):
+            for path, name in lower_paths:
+                if path in used_paths:
+                    continue
+                if any(keyword in name for keyword in band["keywords"]):
+                    ordered[index] = path
+                    used_paths.add(path)
+                    break
+        for index in range(len(self.band_slots) - 1):
+            if ordered[index] is not None:
+                continue
+            for path in paths:
+                if path in used_paths:
+                    continue
+                ordered[index] = path
+                used_paths.add(path)
+                break
+        return ordered
 
     def select_folder(self) -> None:
         folder_path = filedialog.askdirectory()
@@ -101,9 +170,12 @@ class TiffViewerApp:
             self.clear_images()
 
     def clear_images(self) -> None:
-        for label in self.image_labels:
-            label.configure(image="", text="")
-        self.photo_refs = [None] * 7
+        for index, label in enumerate(self.image_labels):
+            label.configure(image="", text=f"第 {index + 1} 格")
+        for label in self.colorbar_labels:
+            label.configure(image="")
+        self.photo_refs = [None] * 8
+        self.colorbar_refs = [None] * 8
 
     def on_prefix_selected(self, _event: tk.Event) -> None:
         selection = self.prefix_list.curselection()
@@ -115,12 +187,22 @@ class TiffViewerApp:
 
     def update_images(self, paths: list[str]) -> None:
         self.clear_images()
-        for idx, path in enumerate(paths[:7]):
+        ordered_paths = self._order_paths_by_band(paths)
+        for idx, path in enumerate(ordered_paths):
+            if idx >= len(self.band_slots):
+                break
+            if not path:
+                self.image_labels[idx].configure(text="無影像")
+                self.colorbar_labels[idx].configure(image="")
+                continue
             image = Image.open(path)
-            image.thumbnail((400, 200))
+            image.thumbnail((300, 200))
             photo = ImageTk.PhotoImage(image)
             self.photo_refs[idx] = photo
-            self.image_labels[idx].configure(image=photo)
+            self.image_labels[idx].configure(image=photo, text="")
+            colorbar = self._create_colorbar()
+            self.colorbar_refs[idx] = colorbar
+            self.colorbar_labels[idx].configure(image=colorbar)
 
     def select_previous(self) -> None:
         selection = self.prefix_list.curselection()
